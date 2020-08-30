@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -73,6 +74,12 @@ type Stats struct {
 	StdDevRtt      time.Duration
 }
 
+type packet struct {
+	data   []byte
+	nbytes int
+	ttl    int
+}
+
 // NewPinger returns a new Pinger.
 func NewPinger(addr string) (*Pinger, error) {
 	ipaddr, err := net.ResolveIPAddr("ip", addr)
@@ -103,6 +110,9 @@ func isIPv4(ip net.IP) bool {
 	return net.IPv4len == len(ip.To4())
 }
 
+// Run runs the pinger. This is a  blocking function that will exit when it's
+// done. If Count or Interval are not specified, it will run continuously untill
+// it is interrupted.
 func (p *Pinger) Run() {
 	var conn *icmp.PacketConn
 	if p.ipv4 {
@@ -120,6 +130,16 @@ func (p *Pinger) Run() {
 	}
 	defer conn.Close()
 	defer p.finish()
+
+	var wg sync.WaitGroup
+	recieve := make(chan *packet, 5)
+	defer close(recieve)
+	wg.Add(1)
+	go p.recieveICMP(conn, recieve, &wg)
+	err := p.sendICMP(conn)
+	if err != nil {
+		log.Println("Error while calling sendICPM :", err.Error())
+	}
 }
 
 // GenerateStats returns the statistics of the pinger. This can be run while
@@ -175,9 +195,54 @@ func (p *Pinger) finish() {
 func (p *Pinger) listen(netProto string) *icmp.PacketConn {
 	conn, err := icmp.ListenPacket(netProto, p.Source)
 	if err != nil {
-		log.Println("Error listening for ICMP Packets: %s\n", err.Error())
+		log.Printf("Error listening for ICMP Packets: %s\n", err.Error())
 		close(p.done)
 		return nil
 	}
 	return conn
+}
+
+func (p *Pinger) recieveICMP(conn *icmp.PacketConn, recieve chan<- *packet, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case <-p.done:
+			return
+		default:
+			data := make([]byte, 512)
+			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
+			var n, ttl int
+			var err error
+			if p.ipv4 {
+				var cm *ipv4.ControlMessage
+				n, cm, _, err = conn.IPv4PacketConn().ReadFrom(data)
+				if cm != nil {
+					ttl = cm.TTL
+				}
+			} else {
+				var cm *ipv6.ControlMessage
+				n, cm, _, err = conn.IPv6PacketConn().ReadFrom(data)
+				if cm != nil {
+					ttl = cm.HopLimit
+				}
+			}
+			if err != nil {
+				if neterr, ok := err.(*net.OpError); ok {
+					if neterr.Timeout() {
+						// Read timeout
+						continue
+					} else {
+						close(p.done)
+						return
+					}
+				}
+			}
+			recieve <- &packet{data: data, nbytes: n, ttl: ttl}
+		}
+	}
+}
+
+func (p *Pinger) sendICMP(conn *icmp.PacketConn)error {
+	var type icmp.Type+
+
 }
