@@ -1,4 +1,4 @@
-module gp
+module github.com/farzamalam/gp
 
 go 1.15
 

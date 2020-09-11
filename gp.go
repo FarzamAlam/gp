@@ -1,4 +1,4 @@
-package pg
+package gp
 
 import (
 	"bytes"
@@ -134,7 +134,6 @@ func (p *Pinger) Run() {
 	}
 	defer conn.Close()
 	defer p.finish()
-
 	var wg sync.WaitGroup
 	recieve := make(chan *packet, 5)
 	defer close(recieve)
@@ -143,6 +142,43 @@ func (p *Pinger) Run() {
 	err := p.sendICMP(conn)
 	if err != nil {
 		log.Println("Error while calling sendICPM :", err.Error())
+	}
+
+	timeout := time.NewTicker(p.Timeout)
+	defer timeout.Stop()
+
+	interval := time.NewTicker(p.Interval)
+	defer interval.Stop()
+
+	for {
+		select {
+		case <-p.done:
+			wg.Wait()
+			return
+		case <-timeout.C:
+			close(p.done)
+			wg.Wait()
+			return
+		case <-interval.C:
+			if p.Count > 0 && p.PacketsSent >= p.Count {
+				continue
+			}
+
+			err = p.sendICMP(conn)
+			if err != nil {
+				fmt.Println("FATAL : ", err.Error())
+			}
+		case r := <-recieve:
+			err := p.processPacket(r)
+			if err != nil {
+				fmt.Println("FATAL : ", err.Error())
+			}
+			if p.Count > 0 && p.PacketsRecieve >= p.Count {
+				close(p.done)
+				wg.Wait()
+				return
+			}
+		}
 	}
 }
 
@@ -196,6 +232,10 @@ func (p *Pinger) finish() {
 	}
 }
 
+func (p *Pinger) Stop() {
+	close(p.done)
+}
+
 func (p *Pinger) listen(netProto string) *icmp.PacketConn {
 	conn, err := icmp.ListenPacket(netProto, p.Source)
 	if err != nil {
@@ -214,7 +254,7 @@ func (p *Pinger) recieveICMP(conn *icmp.PacketConn, recieve chan<- *packet, wg *
 			return
 		default:
 			data := make([]byte, 512)
-			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
+			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 1000))
 			var n, ttl int
 			var err error
 			if p.ipv4 {
@@ -292,6 +332,14 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 	return nil
 }
 
+func (p *Pinger) SetPrivileged(privileged bool) {
+	if privileged {
+		p.network = "ip"
+	} else {
+		p.network = "udp"
+	}
+}
+
 func (p *Pinger) processPacket(packet *packet) error {
 	recievedAt := time.Now()
 	var protocol int
@@ -347,6 +395,14 @@ func (p *Pinger) processPacket(packet *packet) error {
 	}
 	return nil
 }
+
+func (p *Pinger) Addr() string {
+	return p.addr
+}
+
+func (p *Pinger) IPAddr() *net.IPAddr {
+	return p.ipaddr
+}
 func timeToBytes(t time.Time) []byte {
 	nsec := t.UnixNano()
 	b := make([]byte, 8)
@@ -372,6 +428,6 @@ func intToBytes(tracker int64) []byte {
 	return b
 }
 
-func bytesToInt(b []bytes) int64 {
+func bytesToInt(b []byte) int64 {
 	return int64(binary.BigEndian.Uint64(b))
 }
