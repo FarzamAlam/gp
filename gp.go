@@ -1,11 +1,14 @@
 package pg
 
 import (
+	"bytes"
+	"encoding/binary"
 	"log"
 	"math"
 	"math/rand"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -242,7 +245,65 @@ func (p *Pinger) recieveICMP(conn *icmp.PacketConn, recieve chan<- *packet, wg *
 	}
 }
 
-func (p *Pinger) sendICMP(conn *icmp.PacketConn)error {
-	var type icmp.Type+
+func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
+	var typ icmp.Type
+	if p.ipv4 {
+		typ = ipv4.ICMPTypeEcho
+	} else {
+		typ = ipv6.ICMPTypeEchoRequest
+	}
+	var dest net.Addr = p.ipaddr
+	if p.network == "udp" {
+		dest = &net.UDPAddr{IP: p.ipaddr.IP, Zone: p.ipaddr.Zone}
+	}
+	t := append(timeToBytes(time.Now()), intToBytes(p.Tracker)...)
 
+	if remainSize := p.Size - timeSliceLen - trackerLen; remainSize > 0 {
+		t = append(t, bytes.Repeat([]byte{1}, remainSize)...)
+	}
+
+	body := &icmp.Echo{
+		ID:   p.id,
+		Seq:  p.sequence,
+		Data: t,
+	}
+	msg := &icmp.Message{
+		Type: typ,
+		Code: 0,
+		Body: body,
+	}
+	msgBytes, err := msg.Marshal(nil)
+	if err != nil {
+		return err
+	}
+	for {
+		if _, err := conn.WriteTo(msgBytes, dest); err != nil {
+			if neterr, ok := err.(*net.OpError); ok {
+				if neterr.Err == syscall.ENOBUFS {
+					continue
+				}
+			}
+		}
+		p.PacketsSent++
+		p.sequence++
+		break
+	}
+	return nil
+}
+
+func timeToBytes(t time.Time) []byte {
+	nsec := t.UnixNano()
+	b := make([]byte, 8)
+
+	for i := uint8(0); i < 8; i++ {
+		b[i] = byte((nsec >> ((7 - i) * 8)) & 0xff)
+	}
+	return b
+}
+
+func intToBytes(tracker int64) []byte {
+	b := make([]byte, 8)
+
+	binary.BigEndian.PutUint64(b, uint64(tracker))
+	return b
 }
