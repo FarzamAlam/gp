@@ -3,6 +3,7 @@ package pg
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -291,6 +292,61 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 	return nil
 }
 
+func (p *Pinger) processPacket(packet *packet) error {
+	recievedAt := time.Now()
+	var protocol int
+
+	if p.ipv4 {
+		protocol = protocolICMP
+	} else {
+		protocol = protocolIPv6ICMP
+	}
+	var m *icmp.Message
+	var err error
+
+	if m, err = icmp.ParseMessage(protocol, packet.data); err != nil {
+		return fmt.Errorf("Error while parsing icmp message : %s ", err.Error())
+	}
+
+	if m.Type != ipv4.ICMPTypeEchoReply && m.Type != ipv6.ICMPTypeEchoRequest {
+		return nil
+	}
+
+	outputPacket := &Packet{
+		Nbytes: packet.nbytes,
+		IPAddr: p.ipaddr,
+		Addr:   p.addr,
+		TTL:    packet.ttl,
+	}
+	switch pkt := m.Body.(type) {
+	case *icmp.Echo:
+		if p.network == "ip" {
+			if pkt.ID != p.id {
+				return nil
+			}
+		}
+		if len(pkt.Data) < timeSliceLen+trackerLen {
+			return fmt.Errorf("Insufficient data receive. Got %d %v", len(pkt.Data), pkt.Data)
+		}
+		tracker := bytesToInt(pkt.Data[timeSliceLen:])
+		timestamp := bytesToTime(pkt.Data[:timeSliceLen])
+		if tracker != p.Tracker {
+			return nil
+		}
+		outputPacket.Rtt = recievedAt.Sub(timestamp)
+		outputPacket.Sequence = pkt.Seq
+		p.PacketsRecieve++
+	default:
+		return fmt.Errorf("Invalid ICMP echo reply. Type : %T, %v", pkt, pkt)
+
+	}
+	p.rtts = append(p.rtts, outputPacket.Rtt)
+	handler := p.OnRecieve
+	if handler != nil {
+		handler(outputPacket)
+	}
+	return nil
+}
 func timeToBytes(t time.Time) []byte {
 	nsec := t.UnixNano()
 	b := make([]byte, 8)
@@ -301,9 +357,21 @@ func timeToBytes(t time.Time) []byte {
 	return b
 }
 
+func bytesToTime(b []byte) time.Time {
+	var nsec int64
+	for i := uint8(0); i < 8; i++ {
+		nsec += int64(b[i]) << ((7 - i) * 8)
+	}
+	return time.Unix(nsec/1000000000, nsec%1000000000)
+}
+
 func intToBytes(tracker int64) []byte {
 	b := make([]byte, 8)
 
 	binary.BigEndian.PutUint64(b, uint64(tracker))
 	return b
+}
+
+func bytesToInt(b []bytes) int64 {
+	return int64(binary.BigEndian.Uint64(b))
 }
