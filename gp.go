@@ -110,10 +110,6 @@ func NewPinger(addr string) (*Pinger, error) {
 	}, nil
 }
 
-func isIPv4(ip net.IP) bool {
-	return net.IPv4len == len(ip.To4())
-}
-
 // Run runs the pinger. This is a  blocking function that will exit when it's
 // done. If Count or Interval are not specified, it will run continuously untill
 // it is interrupted.
@@ -181,71 +177,6 @@ func (p *Pinger) Run() {
 		}
 	}
 }
-
-// GenerateStats returns the statistics of the pinger. This can be run while
-// Pinger is runnig or after it is finished.
-// OnFinish calls this func to get its finished stats.
-func (p *Pinger) GenerateStats() *Stats {
-	loss := float64(p.PacketsSent-p.PacketsRecieve) / float64(p.PacketsSent) * 100
-	var min, max, total time.Duration
-
-	if len(p.rtts) > 0 {
-		min = p.rtts[0]
-		max = p.rtts[0]
-	}
-	for _, rtt := range p.rtts {
-		if rtt < min {
-			min = rtt
-		}
-		if rtt > max {
-			max = rtt
-		}
-		total += rtt
-	}
-	s := Stats{
-		PacketsSent:    p.PacketsSent,
-		PacketsRecieve: p.PacketsRecieve,
-		PacketsLoss:    loss,
-		Rtts:           p.rtts,
-		Addr:           p.addr,
-		IPAddr:         p.ipaddr,
-		MaxRtt:         max,
-		MinRtt:         min,
-	}
-	if len(p.rtts) > 0 {
-		s.AvgRtt = total / time.Duration(len(p.rtts))
-		var sumSquares time.Duration
-		for _, rtt := range p.rtts {
-			sumSquares += (rtt - s.AvgRtt) * (rtt - s.AvgRtt)
-		}
-		s.StdDevRtt = time.Duration(math.Sqrt(float64(sumSquares / time.Duration(len(p.rtts)))))
-	}
-	return &s
-}
-
-// finish method is called after the pinger stops.
-func (p *Pinger) finish() {
-	handler := p.OnFinish
-	if handler != nil {
-		s := p.GenerateStats()
-		handler(s)
-	}
-}
-
-func (p *Pinger) Stop() {
-	close(p.done)
-}
-
-func (p *Pinger) listen(netProto string) *icmp.PacketConn {
-	conn, err := icmp.ListenPacket(netProto, p.Source)
-	if err != nil {
-		log.Printf("Error listening for ICMP Packets: %s\n", err.Error())
-		close(p.done)
-		return nil
-	}
-	return conn
-}
-
 func (p *Pinger) recieveICMP(conn *icmp.PacketConn, recieve chan<- *packet, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
@@ -332,14 +263,6 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 	return nil
 }
 
-func (p *Pinger) SetPrivileged(privileged bool) {
-	if privileged {
-		p.network = "ip"
-	} else {
-		p.network = "udp"
-	}
-}
-
 func (p *Pinger) processPacket(packet *packet) error {
 	recievedAt := time.Now()
 	var protocol int
@@ -395,14 +318,92 @@ func (p *Pinger) processPacket(packet *packet) error {
 	}
 	return nil
 }
+func (p *Pinger) SetPrivileged(privileged bool) {
+	if privileged {
+		p.network = "ip"
+	} else {
+		p.network = "udp"
+	}
+}
 
+// GenerateStats returns the statistics of the pinger. This can be run while
+// Pinger is runnig or after it is finished.
+// OnFinish calls this func to get its finished stats.
+func (p *Pinger) GenerateStats() *Stats {
+	loss := float64(p.PacketsSent-p.PacketsRecieve) / float64(p.PacketsSent) * 100
+	var min, max, total time.Duration
+
+	if len(p.rtts) > 0 {
+		min = p.rtts[0]
+		max = p.rtts[0]
+	}
+	for _, rtt := range p.rtts {
+		if rtt < min {
+			min = rtt
+		}
+		if rtt > max {
+			max = rtt
+		}
+		total += rtt
+	}
+	s := Stats{
+		PacketsSent:    p.PacketsSent,
+		PacketsRecieve: p.PacketsRecieve,
+		PacketsLoss:    loss,
+		Rtts:           p.rtts,
+		Addr:           p.addr,
+		IPAddr:         p.ipaddr,
+		MaxRtt:         max,
+		MinRtt:         min,
+	}
+	if len(p.rtts) > 0 {
+		s.AvgRtt = total / time.Duration(len(p.rtts))
+		var sumSquares time.Duration
+		for _, rtt := range p.rtts {
+			sumSquares += (rtt - s.AvgRtt) * (rtt - s.AvgRtt)
+		}
+		s.StdDevRtt = time.Duration(math.Sqrt(float64(sumSquares / time.Duration(len(p.rtts)))))
+	}
+	return &s
+}
+
+// finish method is called after the pinger stops.
+func (p *Pinger) finish() {
+	handler := p.OnFinish
+	if handler != nil {
+		s := p.GenerateStats()
+		handler(s)
+	}
+}
+
+func isIPv4(ip net.IP) bool {
+	return net.IPv4len == len(ip.To4())
+}
+
+func (p *Pinger) Stop() {
+	close(p.done)
+}
+
+// Addr returns the hostname or string IP address.
 func (p *Pinger) Addr() string {
 	return p.addr
 }
 
+// Returns the IP address of target host.
 func (p *Pinger) IPAddr() *net.IPAddr {
 	return p.ipaddr
 }
+func (p *Pinger) listen(netProto string) *icmp.PacketConn {
+	conn, err := icmp.ListenPacket(netProto, p.Source)
+	if err != nil {
+		log.Printf("Error listening for ICMP Packets: %s\n", err.Error())
+		close(p.done)
+		return nil
+	}
+	return conn
+}
+
+// timeToBytes converts time to byte slice.
 func timeToBytes(t time.Time) []byte {
 	nsec := t.UnixNano()
 	b := make([]byte, 8)
@@ -413,6 +414,7 @@ func timeToBytes(t time.Time) []byte {
 	return b
 }
 
+// bytesToTime converts byte slice to time.
 func bytesToTime(b []byte) time.Time {
 	var nsec int64
 	for i := uint8(0); i < 8; i++ {
@@ -421,6 +423,7 @@ func bytesToTime(b []byte) time.Time {
 	return time.Unix(nsec/1000000000, nsec%1000000000)
 }
 
+// intToBytes converts int64 to byte slice.
 func intToBytes(tracker int64) []byte {
 	b := make([]byte, 8)
 
@@ -428,6 +431,7 @@ func intToBytes(tracker int64) []byte {
 	return b
 }
 
+// bytesToInt converts byte slice to int64.
 func bytesToInt(b []byte) int64 {
 	return int64(binary.BigEndian.Uint64(b))
 }
