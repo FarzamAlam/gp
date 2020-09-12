@@ -17,6 +17,15 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+// TO DO LIST:
+// 0. Implement basic ping.		--> Done.
+// 1. Implement and test count.
+// 2. Implement and test unlimited.
+// 3. Implement and test Timespan.
+// 4. Implement and test interval.
+// 5. Implement and test Port Check.
+// 6. Implement Basic Graph on console.
+
 const (
 	timeSliceLen     = 8
 	trackerLen       = 8
